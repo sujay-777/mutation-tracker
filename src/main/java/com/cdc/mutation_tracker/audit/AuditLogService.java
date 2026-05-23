@@ -4,13 +4,15 @@ import com.cdc.mutation_tracker.model.AuditLog;
 import com.cdc.mutation_tracker.model.DiffResult;
 import com.cdc.mutation_tracker.model.FieldChange;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -19,10 +21,12 @@ import java.util.stream.Collectors;
 @Slf4j
 public class AuditLogService {
 
+    @Autowired
+    private javax.sql.DataSource dataSource;
+
     private final AuditLogRepository auditLogRepository;
     private final WebClient webClient;
     private final ObjectMapper objectMapper;
-    private final Counter auditLogCounter;
 
     @Value("${groq.api.key}")
     private String groqApiKey;
@@ -36,36 +40,25 @@ public class AuditLogService {
     public AuditLogService(
             AuditLogRepository auditLogRepository,
             WebClient.Builder webClientBuilder,
-            ObjectMapper objectMapper,
-            MeterRegistry meterRegistry) {
-
+            ObjectMapper objectMapper) {
         this.auditLogRepository = auditLogRepository;
         this.webClient = webClientBuilder.build();
         this.objectMapper = objectMapper;
-
-        // counts how many audit logs saved — visible in Grafana
-        this.auditLogCounter = Counter.builder("audit.logs.saved")
-                .description("total audit logs saved")
-                .register(meterRegistry);
     }
 
-    // called by EventRouter for every change event
+    // REQUIRES_NEW = brand new transaction, commits immediately
+    // independent from Kafka listener transaction
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void createAuditLog(DiffResult diff) {
-
-        // Step 1: generate human readable log via Groq
-        // falls back to basic log if Groq is unavailable
         String humanReadableLog = generateHumanReadableLog(diff);
 
-        // Step 2: collect all tags involved in this change
         String tags = diff.getChanges().stream()
                 .map(FieldChange::getTag)
                 .distinct()
                 .collect(Collectors.joining(","));
 
-        // Step 3: serialize changed fields to JSON string
         String changedFieldsJson = serializeChanges(diff.getChanges());
 
-        // Step 4: build and save audit log entity
         AuditLog auditLog = AuditLog.builder()
                 .tableName(diff.getTableName())
                 .rowId(diff.getRowId())
@@ -76,7 +69,7 @@ public class AuditLogService {
                 .build();
 
         auditLogRepository.save(auditLog);
-        auditLogCounter.increment();
+        auditLogRepository.flush();
 
         log.info("Audit log saved for {}.{} — {}",
                 diff.getTableName(), diff.getRowId(), diff.getOperation());
@@ -86,24 +79,18 @@ public class AuditLogService {
         try {
             return callGroqApi(diff);
         } catch (Exception e) {
-            // Groq is down — use basic fallback
-            // audit log still gets saved, just less readable
             log.warn("Groq API failed, using fallback: {}", e.getMessage());
             return generateFallbackLog(diff);
         }
     }
 
     private String callGroqApi(DiffResult diff) throws Exception {
-
-        // build human readable description of changes
         String changesDescription = diff.getChanges().stream()
                 .map(FieldChange::toHumanReadable)
                 .collect(Collectors.joining(", "));
 
-        // prompt sent to Groq
         String prompt = String.format(
-                "Generate one clear audit log sentence for this database change. " +
-                        "Be concise and professional. " +
+                "Generate one clear audit log sentence. " +
                         "Table: %s, Operation: %s, Row ID: %s, Changes: %s.",
                 diff.getTableName(),
                 diff.getOperation(),
@@ -111,26 +98,27 @@ public class AuditLogService {
                 changesDescription
         );
 
-        // build Groq API request body
-        Map<String, Object> requestBody = Map.of(
-                "model", groqModel,
-                "max_tokens", 150,
-                "messages", List.of(
-                        Map.of("role", "user", "content", prompt)
-                )
-        );
+        Map<String, Object> message = new HashMap<>();
+        message.put("role", "user");
+        message.put("content", prompt);
 
-        // call Groq API
+        Map<String, Object> requestBody = new HashMap<>();
+        requestBody.put("model", groqModel);
+        requestBody.put("max_tokens", 150);
+        requestBody.put("messages", List.of(message));
+
+        String requestJson = objectMapper.writeValueAsString(requestBody);
+
         String response = webClient.post()
                 .uri(groqApiUrl)
                 .header("Authorization", "Bearer " + groqApiKey)
                 .header("Content-Type", "application/json")
-                .bodyValue(requestBody)
+                .header("Accept", "application/json")
+                .bodyValue(requestJson)
                 .retrieve()
                 .bodyToMono(String.class)
                 .block();
 
-        // parse response and extract text
         var responseNode = objectMapper.readTree(response);
         return responseNode
                 .path("choices")
@@ -140,12 +128,10 @@ public class AuditLogService {
                 .asText();
     }
 
-    // used when Groq API is unavailable
     private String generateFallbackLog(DiffResult diff) {
         String changes = diff.getChanges().stream()
                 .map(FieldChange::toHumanReadable)
                 .collect(Collectors.joining(", "));
-
         return String.format("%s on %s (ID: %s): %s",
                 diff.getOperation(),
                 diff.getTableName(),

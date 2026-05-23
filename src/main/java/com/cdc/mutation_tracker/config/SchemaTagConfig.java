@@ -11,21 +11,17 @@ import java.util.Map;
 @Data
 public class SchemaTagConfig {
 
-        private Map<String, TableConfig> tables;
+    private Map<String, TableConfig> tables;
 
-        @Data
-        public static class TableConfig{
-            private Map<String, String> columns;
-        }
+    @Data
+    public static class TableConfig {
+        private Map<String, String> columns;
+    }
 
-        public String getTag(String tableName, String fieldName){
-            if(tables == null) return "untagged";
-
-            TableConfig tableConfig = tables.get(tableName);
-            if(tableConfig == null) return "untagged";
-
-            return tableConfig.getColumns()
-                    .getOrDefault(fieldName, "untagged");
-        }
-
+    public String getTag(String tableName, String fieldName) {
+        if (tables == null) return "untagged";
+        TableConfig tableConfig = tables.get(tableName);
+        if (tableConfig == null) return "untagged";
+        return tableConfig.getColumns().getOrDefault(fieldName, "untagged");
+    }
 }

@@ -13,22 +13,10 @@ public class DebeziumEvent {
     @Data
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class Payload {
-
-        // Row state BEFORE the change
-        // NULL for INSERT — nothing existed before
         private JsonNode before;
-
-        // Row state AFTER the change
-        // NULL for DELETE — nothing exists after
         private JsonNode after;
-
-        // c = insert, u = update, d = delete, r = snapshot
         private String op;
-
-        // Which table and database this came from
         private Source source;
-
-        // When this change happened (milliseconds)
         private Long ts_ms;
     }
 
@@ -38,7 +26,6 @@ public class DebeziumEvent {
         private String table;
         private String db;
         private String schema;
-        // WAL position when this change happened
         private Long lsn;
     }
 }

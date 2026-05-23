@@ -22,9 +22,7 @@ public class DiffEngine {
     private final SchemaTagConfig schemaTagConfig;
     private final DebeziumTypeDecoder typeDecoder;
 
-    // entry point — called by CDCConsumer for every event
     public DiffResult compute(DebeziumEvent event) {
-
         if (event.getPayload() == null) {
             throw new MalformedEventException("Event has no payload");
         }
@@ -34,21 +32,16 @@ public class DiffEngine {
         String tableName = payload.getSource().getTable();
 
         if (op == null) {
-            throw new MalformedEventException("op field is missing");
+            throw new MalformedEventException("op field missing");
         }
 
-        // route to correct handler based on operation type
         List<FieldChange> changes = switch (op) {
             case "c" -> handleInsert(payload.getAfter(), tableName);
             case "u" -> handleUpdate(payload.getBefore(), payload.getAfter(), tableName);
             case "d" -> handleDelete(payload.getBefore(), tableName);
-            default  -> {
-                log.warn("Unknown op: {}", op);
-                yield new ArrayList<>();
-            }
+            default  -> { log.warn("Unknown op: {}", op); yield new ArrayList<>(); }
         };
 
-        // extract row ID — try after first, then before
         String rowId = extractRowId(payload.getAfter(), payload.getBefore());
 
         return DiffResult.builder()
@@ -60,65 +53,45 @@ public class DiffEngine {
                 .build();
     }
 
-    // INSERT — before is null, every field in after is new
     private List<FieldChange> handleInsert(JsonNode after, String tableName) {
-        if (after == null) {
-            throw new MalformedEventException("INSERT has null after");
-        }
-
+        if (after == null) throw new MalformedEventException("INSERT has null after");
         List<FieldChange> changes = new ArrayList<>();
         after.fieldNames().forEachRemaining(field -> {
-            if (field.startsWith("__")) return; // skip debezium internals
-
+            if (field.startsWith("__")) return;
             Object newValue = typeDecoder.decode(field, after.get(field));
             String tag = schemaTagConfig.getTag(tableName, field);
-
             changes.add(new FieldChange(field, null, newValue, tag));
         });
         return changes;
     }
 
-    // UPDATE — compare every field, skip unchanged ones
     private List<FieldChange> handleUpdate(
             JsonNode before, JsonNode after, String tableName) {
-
-        // before being null here means REPLICA IDENTITY FULL is missing
         if (before == null || after == null) {
             throw new MalformedEventException(
                     "UPDATE missing before/after. " +
-                            "Run: ALTER TABLE x REPLICA IDENTITY FULL"
+                            "Run: ALTER TABLE users REPLICA IDENTITY FULL"
             );
         }
-
         List<FieldChange> changes = new ArrayList<>();
         after.fieldNames().forEachRemaining(field -> {
             if (field.startsWith("__")) return;
-
             Object oldValue = typeDecoder.decode(field, before.get(field));
             Object newValue = typeDecoder.decode(field, after.get(field));
-
-            // CRITICAL — skip if same value, avoids false alerts
             if (Objects.equals(oldValue, newValue)) return;
-
             String tag = schemaTagConfig.getTag(tableName, field);
             changes.add(new FieldChange(field, oldValue, newValue, tag));
         });
         return changes;
     }
 
-    // DELETE — after is null, everything in before is gone
     private List<FieldChange> handleDelete(JsonNode before, String tableName) {
-        if (before == null) {
-            throw new MalformedEventException("DELETE has null before");
-        }
-
+        if (before == null) throw new MalformedEventException("DELETE has null before");
         List<FieldChange> changes = new ArrayList<>();
         before.fieldNames().forEachRemaining(field -> {
             if (field.startsWith("__")) return;
-
             Object oldValue = typeDecoder.decode(field, before.get(field));
             String tag = schemaTagConfig.getTag(tableName, field);
-
             changes.add(new FieldChange(field, oldValue, null, tag));
         });
         return changes;

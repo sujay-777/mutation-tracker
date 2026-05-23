@@ -12,15 +12,10 @@ public class RedisConfig {
     @Bean
     public RedisTemplate<String, String> redisTemplate(
             RedisConnectionFactory connectionFactory) {
-
         RedisTemplate<String, String> template = new RedisTemplate<>();
         template.setConnectionFactory(connectionFactory);
-
-        // store keys and values as plain strings
-        // so Redis stores "users:5" not binary garbage
         template.setKeySerializer(new StringRedisSerializer());
         template.setValueSerializer(new StringRedisSerializer());
-
         return template;
     }
 }

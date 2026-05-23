@@ -11,18 +11,15 @@ import java.util.stream.Collectors;
 public class DiffResult {
 
     private String tableName;
-    private String operation;      // INSERT / UPDATE / DELETE
-    private String rowId;          // primary key value
+    private String operation;
+    private String rowId;
     private List<FieldChange> changes;
     private Long eventTimestamp;
 
-    // True if nothing actually changed
-    // Happens with same-value updates in PostgreSQL
     public boolean isEmpty() {
         return changes == null || changes.isEmpty();
     }
 
-    // Get changes filtered by tag
     public List<FieldChange> getChangesByTag(String tag) {
         if (changes == null) return List.of();
         return changes.stream()
