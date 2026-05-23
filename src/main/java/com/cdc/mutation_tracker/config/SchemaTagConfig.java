@@ -11,36 +11,21 @@ import java.util.Map;
 @Data
 public class SchemaTagConfig {
 
-    // Spring automatically maps schema-tags.yml into this
-    // structure: tableName → columnName → tag
-    // Example: tables["users"]["email"] = "pii"
-    private Map<String, TableConfig> tables;
+        private Map<String, TableConfig> tables;
 
-    @Data
-    public static class TableConfig {
-        // columnName → tag
-        // Example: columns["email"] = "pii"
-        private Map<String, String> columns;
-    }
+        @Data
+        public static class TableConfig{
+            private Map<String, String> columns;
+        }
 
-    /**
-     * MAIN METHOD your diff engine calls.
-     *
-     * Example calls:
-     * getTag("users", "email")   → "pii"
-     * getTag("users", "balance") → "financial"
-     * getTag("users", "id")      → "untagged"
-     */
-    public String getTag(String tableName, String fieldName) {
+        public String getTag(String tableName, String fieldName){
+            if(tables == null) return "untagged";
 
-        // Table not in config at all
-        if (tables == null) return "untagged";
+            TableConfig tableConfig = tables.get(tableName);
+            if(tableConfig == null) return "untagged";
 
-        TableConfig tableConfig = tables.get(tableName);
-        if (tableConfig == null) return "untagged";
+            return tableConfig.getColumns()
+                    .getOrDefault(fieldName, "untagged");
+        }
 
-        // Field not tagged — still process it, just mark untagged
-        return tableConfig.getColumns()
-                .getOrDefault(fieldName, "untagged");
-    }
 }
