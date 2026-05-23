@@ -22,49 +22,33 @@ public class DiffEngine {
     private final SchemaTagConfig schemaTagConfig;
     private final DebeziumTypeDecoder typeDecoder;
 
-    /**
-     * ENTRY POINT — called by CDCConsumer for every event.
-     *
-     * Takes a full Debezium event.
-         * Returns a DiffResult with exactly what changed and why it matters.
-     */
+    // entry point — called by CDCConsumer for every event
     public DiffResult compute(DebeziumEvent event) {
 
-        // Validate event has payload
         if (event.getPayload() == null) {
-            throw new MalformedEventException(
-                    "Event has no payload"
-            );
+            throw new MalformedEventException("Event has no payload");
         }
 
         DebeziumEvent.Payload payload = event.getPayload();
         String op = payload.getOp();
         String tableName = payload.getSource().getTable();
 
-        // Validate op exists
         if (op == null) {
-            throw new MalformedEventException(
-                    "Event has no operation type (op field missing)"
-            );
+            throw new MalformedEventException("op field is missing");
         }
 
-        // Find what changed based on operation type
+        // route to correct handler based on operation type
         List<FieldChange> changes = switch (op) {
             case "c" -> handleInsert(payload.getAfter(), tableName);
-            case "u" -> handleUpdate(
-                    payload.getBefore(),
-                    payload.getAfter(),
-                    tableName
-            );
+            case "u" -> handleUpdate(payload.getBefore(), payload.getAfter(), tableName);
             case "d" -> handleDelete(payload.getBefore(), tableName);
             default  -> {
-                log.warn("Unknown op type: {}", op);
+                log.warn("Unknown op: {}", op);
                 yield new ArrayList<>();
             }
         };
 
-        // Find row ID for audit log
-        // Try after first, then before (DELETE has no after)
+        // extract row ID — try after first, then before
         String rowId = extractRowId(payload.getAfter(), payload.getBefore());
 
         return DiffResult.builder()
@@ -76,143 +60,76 @@ public class DiffEngine {
                 .build();
     }
 
-    /**
-     * INSERT LOGIC
-     * before = null, after has all new values
-     * Every field in after is a "new" value
-     */
-    private List<FieldChange> handleInsert(
-            JsonNode after,
-            String tableName) {
-
+    // INSERT — before is null, every field in after is new
+    private List<FieldChange> handleInsert(JsonNode after, String tableName) {
         if (after == null) {
-            throw new MalformedEventException(
-                    "INSERT event has null after payload"
-            );
+            throw new MalformedEventException("INSERT has null after");
         }
 
         List<FieldChange> changes = new ArrayList<>();
+        after.fieldNames().forEachRemaining(field -> {
+            if (field.startsWith("__")) return; // skip debezium internals
 
-        after.fieldNames().forEachRemaining(fieldName -> {
+            Object newValue = typeDecoder.decode(field, after.get(field));
+            String tag = schemaTagConfig.getTag(tableName, field);
 
-            // Skip Debezium internal fields
-            if (fieldName.startsWith("__")) return;
-
-            Object newValue = typeDecoder.decode(
-                    fieldName,
-                    after.get(fieldName)
-            );
-
-            String tag = schemaTagConfig.getTag(tableName, fieldName);
-
-            // before = null because this is an INSERT
-            changes.add(new FieldChange(fieldName, null, newValue, tag));
+            changes.add(new FieldChange(field, null, newValue, tag));
         });
-
         return changes;
     }
 
-    /**
-     * UPDATE LOGIC
-     * Both before and after exist
-     * Compare field by field — only return fields that actually changed
-     *
-     * EDGE CASE: PostgreSQL sometimes fires WAL even when value
-     * didn't change. Objects.equals() handles this —
-     * if old == new, skip this field entirely.
-     */
+    // UPDATE — compare every field, skip unchanged ones
     private List<FieldChange> handleUpdate(
-            JsonNode before,
-            JsonNode after,
-            String tableName) {
+            JsonNode before, JsonNode after, String tableName) {
 
+        // before being null here means REPLICA IDENTITY FULL is missing
         if (before == null || after == null) {
             throw new MalformedEventException(
-                    "UPDATE event missing before or after. " +
-                            "Did you run ALTER TABLE x REPLICA IDENTITY FULL?"
+                    "UPDATE missing before/after. " +
+                            "Run: ALTER TABLE x REPLICA IDENTITY FULL"
             );
         }
 
         List<FieldChange> changes = new ArrayList<>();
+        after.fieldNames().forEachRemaining(field -> {
+            if (field.startsWith("__")) return;
 
-        after.fieldNames().forEachRemaining(fieldName -> {
+            Object oldValue = typeDecoder.decode(field, before.get(field));
+            Object newValue = typeDecoder.decode(field, after.get(field));
 
-            if (fieldName.startsWith("__")) return;
-
-            // Decode both values to comparable Java objects
-            Object oldValue = typeDecoder.decode(
-                    fieldName,
-                    before.get(fieldName)
-            );
-            Object newValue = typeDecoder.decode(
-                    fieldName,
-                    after.get(fieldName)
-            );
-
-            // CRITICAL: Skip if values are the same
-            // Without this you get false alerts on every update
+            // CRITICAL — skip if same value, avoids false alerts
             if (Objects.equals(oldValue, newValue)) return;
 
-            String tag = schemaTagConfig.getTag(tableName, fieldName);
-
-            changes.add(new FieldChange(
-                    fieldName,
-                    oldValue,
-                    newValue,
-                    tag
-            ));
+            String tag = schemaTagConfig.getTag(tableName, field);
+            changes.add(new FieldChange(field, oldValue, newValue, tag));
         });
-
         return changes;
     }
 
-    /**
-     * DELETE LOGIC
-     * after = null, before has the deleted values
-     * Every field in before is "gone"
-     */
-    private List<FieldChange> handleDelete(
-            JsonNode before,
-            String tableName) {
-
+    // DELETE — after is null, everything in before is gone
+    private List<FieldChange> handleDelete(JsonNode before, String tableName) {
         if (before == null) {
-            throw new MalformedEventException(
-                    "DELETE event has null before payload"
-            );
+            throw new MalformedEventException("DELETE has null before");
         }
 
         List<FieldChange> changes = new ArrayList<>();
+        before.fieldNames().forEachRemaining(field -> {
+            if (field.startsWith("__")) return;
 
-        before.fieldNames().forEachRemaining(fieldName -> {
+            Object oldValue = typeDecoder.decode(field, before.get(field));
+            String tag = schemaTagConfig.getTag(tableName, field);
 
-            if (fieldName.startsWith("__")) return;
-
-            Object oldValue = typeDecoder.decode(
-                    fieldName,
-                    before.get(fieldName)
-            );
-
-            String tag = schemaTagConfig.getTag(tableName, fieldName);
-
-            // after = null because this is a DELETE
-            changes.add(new FieldChange(fieldName, oldValue, null, tag));
+            changes.add(new FieldChange(field, oldValue, null, tag));
         });
-
         return changes;
     }
 
-    // Extract primary key value for audit log
     private String extractRowId(JsonNode after, JsonNode before) {
-        if (after != null && after.has("id")) {
-            return after.get("id").asText();
-        }
-        if (before != null && before.has("id")) {
-            return before.get("id").asText();
-        }
+        if (after != null && after.has("id")) return after.get("id").asText();
+        if (before != null && before.has("id")) return before.get("id").asText();
         return "unknown";
     }
 
-    // Convert single char op to readable string
     private String mapOperation(String op) {
         return switch (op) {
             case "c" -> "INSERT";
