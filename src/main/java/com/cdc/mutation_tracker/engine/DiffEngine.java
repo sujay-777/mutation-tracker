@@ -54,7 +54,9 @@ public class DiffEngine {
     }
 
     private List<FieldChange> handleInsert(JsonNode after, String tableName) {
-        if (after == null) throw new MalformedEventException("INSERT has null after");
+        if (after == null || after.isNull()) {  // add isNull() check
+            throw new MalformedEventException("INSERT has null after");
+        }
         List<FieldChange> changes = new ArrayList<>();
         after.fieldNames().forEachRemaining(field -> {
             if (field.startsWith("__")) return;
@@ -67,7 +69,7 @@ public class DiffEngine {
 
     private List<FieldChange> handleUpdate(
             JsonNode before, JsonNode after, String tableName) {
-        if (before == null || after == null) {
+        if (before == null || before.isNull() || after == null || after.isNull()) {
             throw new MalformedEventException(
                     "UPDATE missing before/after. " +
                             "Run: ALTER TABLE users REPLICA IDENTITY FULL"
@@ -86,7 +88,9 @@ public class DiffEngine {
     }
 
     private List<FieldChange> handleDelete(JsonNode before, String tableName) {
-        if (before == null) throw new MalformedEventException("DELETE has null before");
+        if (before == null || before.isNull()) {  // add isNull() check
+            throw new MalformedEventException("DELETE has null before");
+        }
         List<FieldChange> changes = new ArrayList<>();
         before.fieldNames().forEachRemaining(field -> {
             if (field.startsWith("__")) return;
