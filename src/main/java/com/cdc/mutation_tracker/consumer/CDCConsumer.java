@@ -11,6 +11,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.Acknowledgment;
+import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -31,8 +32,17 @@ public class CDCConsumer {
             },
             groupId = "cdc-consumer-group"
     )
-    public void consume(String rawMessage, Acknowledgment acknowledgment) {
+    public void consume(
+            @org.springframework.messaging.handler.annotation.Payload(required = false) String rawMessage,
+            Acknowledgment acknowledgment) {
         try {
+
+            // handle Debezium tombstone message after DELETE
+            if (rawMessage == null) {
+                acknowledgment.acknowledge();
+                return;
+            }
+
             DebeziumEvent event = objectMapper
                     .readValue(rawMessage, DebeziumEvent.class);
 

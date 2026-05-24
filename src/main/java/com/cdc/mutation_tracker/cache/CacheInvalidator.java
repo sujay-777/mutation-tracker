@@ -13,9 +13,19 @@ import java.util.Set;
 public class CacheInvalidator {
 
     private final RedisTemplate<String, String> redisTemplate;
+    private final Counter successCounter;
+    private final Counter failureCounter;
 
-    public CacheInvalidator(RedisTemplate<String, String> redisTemplate) {
+    public CacheInvalidator(
+            RedisTemplate<String, String> redisTemplate,
+            MeterRegistry meterRegistry) {
         this.redisTemplate = redisTemplate;
+        this.successCounter = Counter.builder("cache.invalidation.success")
+                .description("successful cache invalidations")
+                .register(meterRegistry);
+        this.failureCounter = Counter.builder("cache.invalidation.failure")
+                .description("failed cache invalidations")
+                .register(meterRegistry);
     }
 
     public void invalidate(String tableName, String rowId) {
@@ -27,8 +37,12 @@ public class CacheInvalidator {
             if (keys != null && !keys.isEmpty()) {
                 redisTemplate.delete(keys);
             }
+
+            successCounter.increment();
             log.debug("Cache invalidated: {}", exactKey);
+
         } catch (Exception e) {
+            failureCounter.increment();
             log.error("Cache invalidation failed for {}:{} — {}",
                     tableName, rowId, e.getMessage());
         }
