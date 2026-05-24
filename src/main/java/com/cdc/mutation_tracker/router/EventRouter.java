@@ -24,24 +24,35 @@ public class EventRouter {
     private final AuditLogService auditLogService;
     private final CacheInvalidator cacheInvalidator;
     private final ObjectMapper objectMapper;
+    private final Counter piiAlertsCounter;
+    private final Counter financialAlertsCounter;
 
     public EventRouter(
             KafkaTemplate<String, String> kafkaTemplate,
             AuditLogService auditLogService,
             CacheInvalidator cacheInvalidator,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            MeterRegistry meterRegistry) {
         this.kafkaTemplate = kafkaTemplate;
         this.auditLogService = auditLogService;
         this.cacheInvalidator = cacheInvalidator;
         this.objectMapper = objectMapper;
+        this.piiAlertsCounter = Counter.builder("router.pii.alerts")
+                .description("total PII alerts fired")
+                .register(meterRegistry);
+        this.financialAlertsCounter = Counter.builder("router.financial.alerts")
+                .description("total financial alerts fired")
+                .register(meterRegistry);
     }
 
     public void route(DiffResult diff) {
         if (diff.hasPiiChanges()) {
             publish("privacy-alerts", diff, "pii");
+            piiAlertsCounter.increment();
         }
         if (diff.hasFinancialChanges()) {
             publish("financial-audit", diff, "financial");
+            financialAlertsCounter.increment();
         }
         auditLogService.createAuditLog(diff);
         cacheInvalidator.invalidate(diff.getTableName(), diff.getRowId());

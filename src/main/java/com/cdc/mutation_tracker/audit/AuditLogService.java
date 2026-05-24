@@ -4,6 +4,8 @@ import com.cdc.mutation_tracker.model.AuditLog;
 import com.cdc.mutation_tracker.model.DiffResult;
 import com.cdc.mutation_tracker.model.FieldChange;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -27,6 +29,7 @@ public class AuditLogService {
     private final AuditLogRepository auditLogRepository;
     private final WebClient webClient;
     private final ObjectMapper objectMapper;
+    private final Counter auditLogCounter;
 
     @Value("${groq.api.key}")
     private String groqApiKey;
@@ -40,10 +43,14 @@ public class AuditLogService {
     public AuditLogService(
             AuditLogRepository auditLogRepository,
             WebClient.Builder webClientBuilder,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            MeterRegistry meterRegistry) {
         this.auditLogRepository = auditLogRepository;
         this.webClient = webClientBuilder.build();
         this.objectMapper = objectMapper;
+        this.auditLogCounter = Counter.builder("audit.logs.saved")
+                .description("total audit logs saved")
+                .register(meterRegistry);
     }
 
     // REQUIRES_NEW = brand new transaction, commits immediately
@@ -70,6 +77,7 @@ public class AuditLogService {
 
         auditLogRepository.save(auditLog);
         auditLogRepository.flush();
+        auditLogCounter.increment();
 
         log.info("Audit log saved for {}.{} — {}",
                 diff.getTableName(), diff.getRowId(), diff.getOperation());
